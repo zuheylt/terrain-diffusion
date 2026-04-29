@@ -1,0 +1,23 @@
+# Python
+__paycache__/
+*.py[cod]
+*.egg-info/
+.venv/
+venv/
+
+#DATA
+data/mnist
+data/tiles/
+*.npy
+
+#Checkpoints
+checkpoints/
+
+#Generated samples
+*.png
+
+#Secrets / env
+.env
+# IDE
+.vscode/
+
