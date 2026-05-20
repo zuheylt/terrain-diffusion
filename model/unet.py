@@ -2,6 +2,8 @@ import math
 import torch
 import torch.nn as nn
 import torch.nn.functional as F
+import torch.utils.checkpoint as cp
+
 
 def sinusoidal_embedding(t, dim):
     half = dim // 2
@@ -28,9 +30,10 @@ class ResBlock(nn.Module):
         return h + self.skip(x)
 class UNet(nn.Module):
     
-    """tiny Unet for MNIST DDPM INPUT: (B,1,32,32). Output: (B,1,32,32)."""
-    def __init__(self,base_ch=64, ch_mults=(1,2)):
+    """UNet for EDM terrain diffusion. Input: (B,1,H,W). Output: (B,1,H,W)."""
+    def __init__(self,base_ch=64, ch_mults=(1,2), use_checkpoint = False):
         super().__init__()
+        self.use_checkpoint = use_checkpoint
         self.emb_dim = base_ch
         time_dim = base_ch * 4
         chs = [base_ch*m for m in ch_mults]
@@ -58,17 +61,21 @@ class UNet(nn.Module):
         self.dec1 = ResBlock(chs[0] + chs[0], chs[0], time_dim)
         
         self.output_conv = nn.Conv2d(chs[0],1, 1)
-    def forward(self, x, t):
-          t_emb = sinusoidal_embedding(t.float(), self.emb_dim)
+    def _run(self,block, x, t_emb):
+        if self.use_checkpoint:
+            return cp.checkpoint(block, x, t_emb, use_reentrant=False)
+        return block(x, t_emb)
+    def forward(self, x, noise_cond):
+          t_emb = sinusoidal_embedding(noise_cond, self.emb_dim)
           t_emb = self.time_mlp(t_emb)                                                     
   
           x0 = self.input_conv(x)                                                          
-          h1 = self.down1(x0, t_emb)
-          h2 = self.down2(self.pool1(h1), t_emb)                                           
+          h1 = self._run(self.down1,x0, t_emb)
+          h2 = self._run(self.down2, self.pool1(h1), t_emb)                                           
                                                                                            
-          h = self.mid(self.pool2(h2), t_emb)
+          h = self._run(self.mid, self.pool2(h2), t_emb)
                                                                                            
-          h = self.dec2(torch.cat([self.up2(h), h2], dim=1), t_emb)                        
-          h = self.dec1(torch.cat([self.up1(h), h1], dim=1), t_emb)
+          h = self._run(self.dec2, torch.cat([self.up2(h), h2], dim=1), t_emb)                        
+          h = self._run(self.dec1, torch.cat([self.up1(h), h1], dim=1), t_emb)
                                                                                            
           return self.output_conv(h)
