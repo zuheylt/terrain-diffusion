@@ -1,5 +1,5 @@
 # Python
-__paycache__/
+__pycache__/.
 *.py[cod]
 *.egg-info/
 .venv/
