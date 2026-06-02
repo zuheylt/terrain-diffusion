@@ -1,3 +1,4 @@
+import os
 import yaml
 import torch
 from torch.amp import autocast, GradScaler
@@ -9,6 +10,7 @@ from tqdm import tqdm
 from model.unet import UNet
 from model.edm import EDMPrecond, edm_loss
 from model.ema import EMA
+
 def main(config_path):
     with open(config_path) as f:
         cfg = yaml.safe_load(f)
@@ -24,7 +26,7 @@ def main(config_path):
     opt = torch.optim.AdamW(model.parameters(), lr=cfg["lr"])
     scaler = GradScaler()
     print(f"params: {sum(p.numel() for p in model.parameters())/1e6:.2f}M")
-    ckpt_dir = Path("checkpoints/heightmap_64_edm")
+    ckpt_dir = Path(f"checkpoints/heightmap_{cfg['image_size']}_edm")
     ckpt_dir.mkdir(parents=True, exist_ok=True)
     start_epoch = 1
     last_ckpt = sorted(ckpt_dir.glob("epoch_*.pt"))
@@ -53,6 +55,7 @@ def main(config_path):
             total_loss += loss.item()
         print(f"Epoch {epoch}: loss={total_loss/len(loader):.4f}")
         if epoch % cfg["checkpoint_every"] == 0:
+            ckpt_path = ckpt_dir / f"epoch_{epoch:04d}.pt"
             torch.save({
                 "epoch": epoch,
                 "model": model.state_dict(),
@@ -60,8 +63,17 @@ def main(config_path):
                 "opt": opt.state_dict(),
                 "scaler": scaler.state_dict(),
                 "cfg": cfg,
-            }, ckpt_dir / f"epoch_{epoch:04d}.pt")
+            }, ckpt_path)
             print(f"  checkpoint saved")
+            if os.environ.get("HF_TOKEN"):
+                  from huggingface_hub import HfApi
+                  HfApi().upload_file(
+                      path_or_fileobj=str(ckpt_path),
+                      path_in_repo=ckpt_path.name,
+                      repo_id=os.environ["HF_TOKEN_REPO"],
+                      token=os.environ["HF_TOKEN"],
+                  )
+                  print(f"  pushed to Hub")
 if __name__ == "__main__":
     p = argparse.ArgumentParser()
     p.add_argument("--config", default="configs/heightmap_64.yaml")

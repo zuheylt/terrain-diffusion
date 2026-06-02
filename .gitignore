@@ -1,6 +1,7 @@
 # Python
 __pycache__/.
 *.py[cod]
+*.pt
 *.egg-info/
 .venv/
 venv/
@@ -9,6 +10,7 @@ venv/
 data/mnist
 data/tiles/
 *.npy
+data/raw/
 
 #Checkpoints
 checkpoints/
@@ -20,3 +22,6 @@ checkpoints/
 .env
 # IDE
 .vscode/
+
+CLAUDE.md
+

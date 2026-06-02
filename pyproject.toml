@@ -14,11 +14,15 @@
       "tqdm>=4.66",
       "matplotlib>=3.8",                                                                   
       "einops>=0.7",
+      "huggingface_hub>=0.23",
   ]                                                                                        
                   
   [project.optional-dependencies]
   train = [
       "bitsandbytes>=0.43",
+  ]
+  data = [
+    "rasterio>=1.5"
   ]
 
   [tool.hatch.build.targets.wheel]                                                         
