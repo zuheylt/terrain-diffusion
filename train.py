@@ -21,7 +21,7 @@ def main(config_path):
 
     # --- Distributed setup -------------------------------------------------
     # torchrun sets RANK / LOCAL_RANK / WORLD_SIZE. If they're absent we fall
-    # back to a normal single-process run (e.g. local debugging on your 4070).
+    # back to a normal single-process run (e.g. local debugging).
     ddp = "RANK" in os.environ
     if ddp:
         dist.init_process_group(backend="nccl")
@@ -60,6 +60,28 @@ def main(config_path):
 
     ckpt_dir = Path(f"checkpoints/heightmap_{cfg['image_size']}_edm")
     ckpt_dir.mkdir(parents=True, exist_ok=True)
+    
+    # --- Download from HF if no local checkpoint (cross-session resume) ---
+    if not any(ckpt_dir.glob("epoch_*.pt")) and os.environ.get("HF_TOKEN") and os.environ.get("HF_TOKEN_REPO"):
+        if is_main:
+            try:
+                from huggingface_hub import hf_hub_download
+                print("No local checkpoint — downloading latest.pt from HF...")
+                hf_hub_download(
+                    repo_id=os.environ["HF_TOKEN_REPO"],
+                    filename="latest.pt",
+                    token=os.environ["HF_TOKEN"],
+                    local_dir=str(ckpt_dir),
+                    local_dir_use_symlinks=False,
+                )
+                probe = torch.load(ckpt_dir / "latest.pt", map_location="cpu")
+                renamed = ckpt_dir / f"epoch_{probe['epoch']:04d}.pt"
+                (ckpt_dir / "latest.pt").rename(renamed)
+                print(f"  saved as {renamed.name}")
+            except Exception as e:
+                print(f"  HF download failed (starting fresh): {e}")
+        if ddp:
+            dist.barrier()   # rank 1 waits here until rank 0 finishes the download
 
     # --- Resume (every rank loads the same state) -------------------------
     start_epoch = 1
@@ -103,22 +125,37 @@ def main(config_path):
             ckpt_path = ckpt_dir / f"epoch_{epoch:04d}.pt"
             torch.save({
                 "epoch": epoch,
-                "model": model.state_dict(),   # raw module → no "module." prefix
+                "model": model.state_dict(),
                 "ema": ema.shadow.state_dict(),
                 "opt": opt.state_dict(),
                 "scaler": scaler.state_dict(),
                 "cfg": cfg,
             }, ckpt_path)
             print(f"  checkpoint saved")
-            if os.environ.get("HF_TOKEN"):
-                from huggingface_hub import HfApi
-                HfApi().upload_file(
-                    path_or_fileobj=str(ckpt_path),
-                    path_in_repo=ckpt_path.name,
-                    repo_id=os.environ["HF_TOKEN_REPO"],
-                    token=os.environ["HF_TOKEN"],
-                )
-                print(f"  pushed to Hub")
+            if os.environ.get("HF_TOKEN") and os.environ.get("HF_TOKEN_REPO"):
+                try:
+                    from huggingface_hub import HfApi
+                    api = HfApi()
+                    # Upload milestone (every 10 epochs) and always overwrite latest
+                    if epoch % 10 == 0:
+                        api.upload_file(
+                            path_or_fileobj=str(ckpt_path),
+                            path_in_repo=ckpt_path.name,
+                            repo_id=os.environ["HF_TOKEN_REPO"],
+                            token=os.environ["HF_TOKEN"],
+                            )
+                    api.upload_file(
+                        path_or_fileobj=str(ckpt_path),
+                        path_in_repo="latest.pt",
+                        repo_id=os.environ["HF_TOKEN_REPO"],
+                        token=os.environ["HF_TOKEN"],
+                    )
+                    print(f"  pushed to Hub")
+                    # Delete local file to free disk (latest.pt is on HF)
+                    ckpt_path.unlink()
+                    print(f"  local checkpoint removed")
+                except Exception as e:
+                    print(f"  HF upload failed (continuing): {e}")
 
     if ddp:
         dist.destroy_process_group()
